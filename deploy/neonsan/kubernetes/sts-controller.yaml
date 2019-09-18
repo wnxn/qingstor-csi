@@ -89,18 +89,6 @@ spec:
         volumeMounts:
         - name: socket-dir
           mountPath: /csi
-      - name: csi-snapshotter
-        image: quay.io/k8scsi/csi-snapshotter:v0.4.1
-        args:
-        - "--csi-address=$(ADDRESS)"
-        - "--connection-timeout=15s"
-        env:
-        - name: ADDRESS
-          value: /var/lib/csi/sockets/pluginproxy/csi.sock
-        imagePullPolicy: "IfNotPresent"
-        volumeMounts:
-        - name: socket-dir
-          mountPath: /var/lib/csi/sockets/pluginproxy
       - name: csi-neonsan
         image: dockerhub.qingcloud.com/csiplugin/csi-neonsan:canary
         args :
