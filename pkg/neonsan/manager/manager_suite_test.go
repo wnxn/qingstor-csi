@@ -25,16 +25,12 @@ import (
 )
 
 const (
-	TestPool     = "csi"
+	TestPool     = "kube"
 	TestPoolFake = "fake"
 
 	TestVolume1    = "vol1"
 	TestVolume2    = "vol2"
 	TestVolumeFake = "fake"
-
-	TestSnap1    = "snap1"
-	TestSnap2    = "snap2"
-	TestSnapFake = "fake"
 )
 
 var hasCli bool = false

@@ -24,7 +24,7 @@ import (
 
 var _ = Describe("Pool", func() {
 	It("can find pool", func() {
-		By("csi pool")
+		By("kube pool")
 		poolInfo, err := manager.FindPool(TestPool)
 		Expect(err).To(BeNil())
 		Expect(poolInfo.Name).To(Equal(TestPool))

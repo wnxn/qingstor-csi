@@ -20,20 +20,15 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"github.com/golang/glog"
 	"github.com/kubernetes-csi/drivers/pkg/csi-common"
-	"github.com/yunify/qingstor-csi/pkg/neonsan/cache"
 	"github.com/yunify/qingstor-csi/pkg/neonsan/manager"
 	"github.com/yunify/qingstor-csi/pkg/neonsan/util"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"os"
-	"path"
-	"strconv"
 )
 
 type controllerServer struct {
 	*csicommon.DefaultControllerServer
-	cache          cache.SnapshotCache
 	creatingVolume map[string]bool
 }
 
@@ -122,105 +117,6 @@ func (cs *controllerServer) CreateVolume(ctx context.Context,
 	}
 	glog.Infof("Not Found duplicate volume name [%s].", volumeName)
 
-	// Restore volume from snapshot
-	if req.GetVolumeContentSource() != nil && req.GetVolumeContentSource().GetSnapshot() != nil {
-		// create new volume
-		volumeInfo, err := manager.CreateVolume(volumeName, sc.Pool, requiredFormatByte, sc.Replicas)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		deleteVolume := func() {
-			if err != nil {
-				glog.Errorf("")
-				manager.DeleteVolume(volumeInfo.Name, volumeInfo.Pool)
-			}
-		}
-		defer deleteVolume()
-
-		// get snapshot id
-		snapId := req.GetVolumeContentSource().GetSnapshot().GetId()
-		glog.Infof("Restore volume [%s] from snapshot [%s]", volumeInfo.Name, snapId)
-		snapInfo := cs.cache.Find(snapId)
-		if snapInfo == nil {
-			return nil, status.Errorf(codes.NotFound, "cannot find snapshot %v", snapId)
-		}
-		if snapInfo.Status != manager.SnapshotStatusOk {
-			return nil, status.Errorf(codes.Internal, "status of snapshot %v is not ready", snapId)
-		}
-		// restore volume
-		tempSnapshotFilepath := path.Join(util.TempSnapshotDir, snapInfo.Name)
-		deleteTempFile := func() {
-			err := os.Remove(tempSnapshotFilepath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					glog.Warningf("File [%s] does not exist", tempSnapshotFilepath)
-				}
-				glog.Errorf("Failed to remote [%s], error: [%s]", tempSnapshotFilepath, err)
-			}
-			glog.Infof("Succeed to remove [%s]", tempSnapshotFilepath)
-		}
-		defer deleteTempFile()
-
-		// 1. export snapshot
-		glog.Info("Export snapshot")
-		err = manager.ExportSnapshot(manager.ExportSnapshotRequest{
-			SnapName:   snapInfo.Name,
-			SrcVolName: snapInfo.SrcVolName,
-			PoolName:   snapInfo.Pool,
-			FilePath:   path.Join(util.TempSnapshotDir, snapInfo.Name),
-			Protocol:   manager.Protocol,
-		})
-		if err != nil {
-			glog.Errorf("Export snapshot error: %s", err.Error())
-			return nil, status.Errorf(codes.Internal, "export snapshot error: %v", err)
-		}
-		// 2. import snapshot
-		glog.Info("Import snapshot")
-		err = manager.ImportSnapshot(manager.ImportSnapshotRequest{
-			VolName:  volumeInfo.Name,
-			PoolName: volumeInfo.Pool,
-			FilePath: path.Join(util.TempSnapshotDir, snapInfo.Name),
-			Protocol: manager.Protocol,
-		})
-		if err != nil {
-			glog.Errorf("Import snapshot error: %s", err.Error())
-			return nil, status.Errorf(codes.Internal, "import snapshot error: %v", err)
-		}
-		// 3. restore volume
-		glog.Info("Rollback snapshot")
-		err = manager.RollbackSnapshot(manager.RollbackSnapshotRequest{
-			VolumeName: volumeInfo.Name,
-			Pool:       volumeInfo.Pool,
-			SnapName:   snapInfo.Name,
-		})
-		if err != nil {
-			glog.Errorf("Rollback snapshot error: %s", err.Error())
-			return nil, status.Errorf(codes.Internal, "rollback snapshot error: %v", err)
-		}
-
-		// 4. delete snapshot in restore volume
-		if info, err := manager.FindSnapshot(snapInfo.Name, volumeInfo.Name, snapInfo.Pool); err != nil {
-			glog.Errorf("Find restore volume's snapshot error: %s", err.Error())
-			return nil, status.Errorf(codes.Internal, "find restore volume's snapshot error: %v", err)
-		} else {
-			if info != nil {
-				err = manager.DeleteSnapshot(info.Name, info.SrcVolName, info.Pool)
-				if err != nil {
-					glog.Errorf("Delete snapshot error: %s", err.Error())
-					return nil, status.Errorf(codes.Internal, "delete snapshot in restore volume error: %v", err)
-				}
-			}
-		}
-
-		return &csi.CreateVolumeResponse{
-			Volume: &csi.Volume{
-				Id:            volumeInfo.Name,
-				CapacityBytes: volumeInfo.SizeByte,
-				Attributes:    req.GetParameters(),
-			},
-		}, nil
-	}
-
 	// Do create volume
 	glog.Infof("Creating volume [%s] with [%d] bytes in pool [%s]...", volumeName, requiredFormatByte, sc.Pool)
 	volumeInfo, err := manager.CreateVolume(volumeName, sc.Pool, requiredFormatByte, sc.Replicas)
@@ -281,7 +177,6 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		glog.Errorf("Failed to delete volume: [%s] in pool [%s] with error: [%v].", volumeId, volInfo.Pool, err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	cs.cache.Delete(volumeId)
 	glog.Infof("Succeed to delete volume: [%s] in pool [%s]", volumeId, volInfo.Pool)
 	return &csi.DeleteVolumeResponse{}, nil
 }
@@ -374,212 +269,4 @@ func (cs *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacit
 	return &csi.GetCapacityResponse{
 		AvailableCapacity: poolInfo.FreeByte,
 	}, nil
-}
-
-// CreateSnapshot
-// Idempotent: If a snapshot corresponding to the specified snapshot name
-// is already successfully cut and uploaded and is compatible with the
-// specified source volume id and parameters in the CreateSnapshotRequest.
-func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
-	defer util.EntryFunction("CreateSnapshot")()
-
-	// 1. Check input arguments
-	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT); err != nil {
-		glog.Warningf("Invalid create snapshot req: [%v].", req)
-		return nil, err
-	}
-	if len(req.GetName()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "Snapshot Name cannot be empty.")
-	}
-	if len(req.GetSourceVolumeId()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "Source Volume ID cannot be empty.")
-	}
-
-	// 2. Check if the snapshot already exists.
-	// get storage class
-	exVol, err := manager.FindVolumeWithoutPool(req.GetSourceVolumeId())
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	// 3. Snapshot already exist
-	if exSnap := cs.cache.Find(req.GetName()); exSnap != nil {
-		if exSnap.SrcVolName == req.GetSourceVolumeId() {
-			// compatible with source volume id, return OK
-			glog.Warningf("Snapshot [%v] already exist and compatible with srcVolumeId in request, return this.",
-				exSnap)
-			return &csi.CreateSnapshotResponse{
-				Snapshot: &csi.Snapshot{
-					SizeBytes:      exSnap.SizeByte,
-					Id:             exSnap.Name,
-					SourceVolumeId: exSnap.SrcVolName,
-					CreatedAt:      exSnap.CreatedTime,
-					Status: &csi.SnapshotStatus{
-						Type: csi.SnapshotStatus_READY,
-					},
-				},
-			}, nil
-		} else {
-			// incompatible with source volume id, return ALREADY_EXIST
-			glog.Errorf("Snapshot [%v] already exist but incompatible with srcVolumeId in request [%v].", exSnap, req)
-			return nil, status.Errorf(codes.AlreadyExists,
-				"Snapshot [%s] already exists but is incompatible with the specified volume id [%v].", req.GetName(),
-				req.GetSourceVolumeId())
-		}
-	}
-
-	// 4. do create snapshot
-	glog.Infof("Create snapshot [%s] in pool [%s] from volume [%s]...", req.GetName(), exVol.Pool,
-		req.GetSourceVolumeId())
-	snapInfo, err := manager.CreateSnapshot(req.GetName(), req.GetSourceVolumeId(), exVol.Pool)
-	if err != nil {
-		glog.Errorf("Failed to create snapshot with error [%s].", err.Error())
-		return nil, status.Errorf(codes.Internal, err.Error())
-	}
-	glog.Infof("Add snapshot [%v] into cache", snapInfo)
-	if !cs.cache.Add(snapInfo) {
-		glog.Warningf("Snapshot [%s] already exist in cache", snapInfo.Name)
-	}
-
-	glog.Infof("Succeed to create snapshot [%v].", snapInfo)
-	return &csi.CreateSnapshotResponse{
-		Snapshot: &csi.Snapshot{
-			SizeBytes:      snapInfo.SizeByte,
-			Id:             snapInfo.Name,
-			SourceVolumeId: snapInfo.SrcVolName,
-			CreatedAt:      snapInfo.CreatedTime,
-			Status: &csi.SnapshotStatus{
-				Type: csi.SnapshotStatus_READY,
-			},
-		},
-	}, nil
-}
-
-// DeleteSnapshot must release the storage space associated with the snapshot
-// Idempotent: If a snapshot corresponding to the specified snapshot id does
-// not exist, the plugin MUST reply OK.
-// csi.DeleteSnapshotRequest: snapshot id is required.
-func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
-	defer util.EntryFunction("DeleteSnapshot")()
-
-	// 1. Check input arguments
-	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT); err != nil {
-		glog.Warningf("Invalid delete snapshot req: %v.", req)
-		return nil, err
-	}
-	if len(req.GetSnapshotId()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "Snapshot ID cannot be empty.")
-	}
-
-	// 2. Find snapshot by id
-	exSnap := cs.cache.Find(req.GetSnapshotId())
-	if exSnap == nil {
-		glog.Warningf("Snapshot [%s] does not exist.", req.GetSnapshotId())
-		return &csi.DeleteSnapshotResponse{}, nil
-	}
-
-	// 3. Do delete snapshot
-	glog.Infof("Delete snapshot [%v]...", exSnap)
-	err := manager.DeleteSnapshot(exSnap.Name, exSnap.SrcVolName, exSnap.Pool)
-	if err != nil {
-		glog.Errorf("Failed to delete snapshot [%v].", exSnap)
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	cs.cache.Delete(exSnap.Name)
-	glog.Infof("Succeed to delete snapshot [%v].", exSnap)
-	return &csi.DeleteSnapshotResponse{}, nil
-}
-
-// ListSnapshots return the information about all snapshots on the storage
-// system within the given parameters regardless of how they were created.
-// ListSnapshots SHALL NOT list a snapshot that is being created but has not
-// been cut successfully yet.
-// Use token get next page when only max entries in request.
-func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
-	defer util.EntryFunction("ListSnapshots")()
-	// check input args
-	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS); err != nil {
-		glog.Warningf("Invalid list snapshot req: %v", req)
-		return nil, err
-	}
-	snapId := req.GetSnapshotId()
-	srcVolId := req.GetSourceVolumeId()
-
-	// case 1: snapshot id
-	if len(snapId) != 0 {
-		snapInfo := cs.cache.Find(req.GetSnapshotId())
-		if snapInfo == nil {
-			return &csi.ListSnapshotsResponse{}, nil
-		}
-
-		if len(srcVolId) != 0 && srcVolId != snapInfo.SrcVolName {
-			return nil, status.Error(codes.Internal, "mismatch snapshot and volume name")
-		}
-		return &csi.ListSnapshotsResponse{
-			Entries: []*csi.ListSnapshotsResponse_Entry{
-				{
-					Snapshot: manager.ConvertNeonToCsiSnap(snapInfo),
-				},
-			},
-		}, nil
-	}
-
-	// case 2: volume id
-	// According to csi test, we need not support pageable.
-	if len(srcVolId) != 0 {
-		// consult
-		volInfo, err := manager.FindVolumeWithoutPool(srcVolId)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		// should return empty when the specify source volume id is not exist
-		if volInfo == nil {
-			return &csi.ListSnapshotsResponse{}, nil
-		}
-
-		snapInfoList, err := manager.ListSnapshotByVolume(srcVolId, volInfo.Pool)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		// non-pageable
-		return &csi.ListSnapshotsResponse{
-			Entries: manager.ConvertNeonSnapToListSnapResp(snapInfoList),
-		}, nil
-	}
-
-	// case 3: non volume id provided
-	// must consider pageable
-	// get full snapshot list
-	snapList := cs.cache.List()
-	// get max entries
-	maxEntries := int(req.GetMaxEntries())
-	if maxEntries == 0 || maxEntries >= len(snapList) {
-		maxEntries = len(snapList)
-	}
-	// get starting token
-	startToken := 0
-	if len(req.GetStartingToken()) != 0 {
-		var err error
-		startToken, err = strconv.Atoi(req.GetStartingToken())
-		// token must be an integer
-		if err != nil {
-			return nil, status.Error(codes.Aborted, err.Error())
-		}
-		// should fail when the starting_token is greater than total number of snapshots
-		if startToken > len(snapList) || startToken < 0 {
-			return nil, status.Errorf(codes.Aborted, "invalid starting token")
-		}
-	}
-	endToken := startToken + maxEntries
-	glog.Infof("list snapshot [%d, %d) len [%d] with max entries [%d]", startToken, endToken, len(snapList), maxEntries)
-	if endToken >= len(snapList) {
-		return &csi.ListSnapshotsResponse{
-			Entries: manager.ConvertNeonSnapToListSnapResp(snapList[startToken:]),
-		}, nil
-	} else {
-		return &csi.ListSnapshotsResponse{
-			Entries:   manager.ConvertNeonSnapToListSnapResp(snapList[startToken:endToken]),
-			NextToken: strconv.Itoa(endToken),
-		}, nil
-	}
 }

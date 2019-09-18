@@ -20,8 +20,6 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"github.com/golang/glog"
 	"github.com/kubernetes-csi/drivers/pkg/csi-common"
-	"github.com/yunify/qingstor-csi/pkg/neonsan/cache"
-	"os"
 )
 
 const version = "0.3.0"
@@ -52,16 +50,8 @@ func NewIdentityServer(d *csicommon.CSIDriver) *identityServer {
 // NewControllerServer
 // Create controller server
 func NewControllerServer(d *csicommon.CSIDriver) *controllerServer {
-	var snapCache cache.SnapshotCacheType
-	snapCache.New()
-	err := snapCache.Sync()
-	if err != nil {
-		glog.Errorf("sync snapshot cache error: %v", err)
-		os.Exit(1)
-	}
 	return &controllerServer{
 		DefaultControllerServer: csicommon.NewDefaultControllerServer(d),
-		cache:                   &snapCache,
 		creatingVolume:          make(map[string]bool),
 	}
 }
@@ -86,8 +76,6 @@ func (neons *neonsan) Run(driverName, nodeId, endpoint string) {
 	neons.driver.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
-		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
-		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 	})
 	neons.driver.AddVolumeCapabilityAccessModes([]csi.VolumeCapability_AccessMode_Mode{
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER})

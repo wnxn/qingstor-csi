@@ -164,14 +164,14 @@ func readVolumeInfoContent(line string) (ret *VolumeInfo) {
 			ret.SizeByte = size64
 		case 3:
 			ret.Pool = v
-		case 4:
+		case 5:
 			rep, err := strconv.Atoi(v)
 			if err != nil {
 				glog.Errorf("parse int [%s] error in string [%s]", v, line)
 				return nil
 			}
 			ret.Replicas = rep
-		case 6:
+		case 9:
 			ret.Status = v
 		}
 	}
