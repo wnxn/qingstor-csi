@@ -17,7 +17,7 @@
 .PHONY: all neonsan
 
 NEONSAN_IMAGE_NAME=dockerhub.qingcloud.com/csiplugin/csi-neonsan
-NEONSAN_IMAGE_VERSION=v0.3.0
+NEONSAN_IMAGE_VERSION=canary
 NEONSAN_PLUGIN_NAME=neonsan-plugin
 
 neonsan:
