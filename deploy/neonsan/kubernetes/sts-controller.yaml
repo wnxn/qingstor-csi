@@ -114,10 +114,6 @@ spec:
           mountPath: /etc/neonsan
         - name: neonsan-cmd
           mountPath: /usr/bin
-        - name: lib
-          mountPath: /lib
-        - name: usrlib
-          mountPath: /usr/lib
       volumes:
       - name: socket-dir
         emptyDir: {}
@@ -128,9 +124,3 @@ spec:
         hostPath:
           path: /usr/bin
           type: DirectoryOrCreate
-      - name: lib
-        hostPath:
-          path: /lib
-      - name: usrlib
-        hostPath:
-          path: /usr/lib

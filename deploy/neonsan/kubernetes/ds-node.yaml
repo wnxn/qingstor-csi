@@ -61,55 +61,7 @@ spec:
               mountPath: /csi
             - name: registration-dir
               mountPath: /registration
-        - name: csi-neonsan
-          securityContext:
-            privileged: true
-            capabilities:
-              add: ["SYS_ADMIN"]
-            allowPrivilegeEscalation: true
-          image: dockerhub.qingcloud.com/csiplugin/csi-neonsan:canary
-          args :
-            - "--nodeid=$(NODE_ID)"
-            - "--endpoint=$(CSI_ENDPOINT)"
-            - "--v=5"
-            - "--drivername=csi-neonsan"
-            - "--config=/etc/config/qbd.conf"
-            - "--pools=kube"
-            - "--protocol=TCP"
-          env:
-            - name: NODE_ID
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: spec.nodeName
-            - name: CSI_ENDPOINT
-              value: unix:///csi/csi.sock
-          imagePullPolicy: "IfNotPresent"
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-            - name: mount-dir
-              mountPath: /var/lib/kubelet
-              mountPropagation: "Bidirectional"
-            - name: dev-dir
-              mountPath: /dev
-              mountPropagation: "HostToContainer"
-            - name: server-config
-              mountPath: /etc/config
-            - name: neonsan-cmd
-              mountPath: /usr/bin
-            - name: qbd-cmd
-              mountPath: /usr/sbin
-            - name: lib
-              mountPath: /lib
-            - name: usrlib
-              mountPath: /usr/lib
       volumes:
-        # make sure mount propagate feature gate is enabled
-        - name: mount-dir
-          hostPath:
-            path: /var/lib/kubelet
-            type: DirectoryOrCreate
         - name: socket-dir
           hostPath:
             path: /var/lib/kubelet/plugins/csi-neonsan
@@ -118,24 +70,3 @@ spec:
           hostPath:
             path: /var/lib/kubelet/plugins
             type: Directory
-        - name: dev-dir
-          hostPath:
-            path: /dev
-            type: Directory
-        - name: server-config
-          configMap:
-            name: csi-neonsan
-        - name: neonsan-cmd
-          hostPath:
-            path: /usr/bin
-            type: DirectoryOrCreate
-        - name: qbd-cmd
-          hostPath:
-            path: /usr/sbin
-            type: DirectoryOrCreate
-        - name: lib
-          hostPath:
-            path: /lib
-        - name: usrlib
-          hostPath:
-            path: /usr/lib
