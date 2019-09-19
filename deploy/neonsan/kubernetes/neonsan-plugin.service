@@ -1,0 +1,20 @@
+[Unit]
+Description=NeonSAN CSI Plugin
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/neonsan-plugin  \
+            --nodeid=i-jxfdoivb \
+           --endpoint=unix:///var/lib/kubelet/plugins/csi-neonsan/csi.sock \
+           --drivername=csi-neonsan \
+           --config=/etc/neonsan/qbd.conf \
+           --pools=kube \
+           --protocol=TCP \
+           --v=5
+
+Restart=on-failure
+StartLimitBurst=3
+StartLimitInterval=60s
+
+[Install]
+WantedBy=multi-user.target
